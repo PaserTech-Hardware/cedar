@@ -38,6 +38,7 @@
 #include <linux/dma-buf.h>
 #include <linux/idr.h>
 #include <linux/sched/task.h>
+#include <linux/highmem.h>
 
 #include "ion.h"
 #include "ion_priv.h"
@@ -986,6 +987,40 @@ static void ion_dma_buf_kunmap(struct dma_buf *dmabuf, unsigned long offset,
 {
 }
 
+static int ion_dma_buf_vmap(struct dma_buf *dmabuf, struct dma_buf_map *map)
+{
+	struct ion_buffer *buffer = dmabuf->priv;
+	void *vaddr;
+	int ret = 0;
+
+	if (buffer->heap->ops->map_kernel) {
+		mutex_lock(&buffer->lock);
+		vaddr = ion_buffer_kmap_get(buffer);
+		dma_buf_map_set_vaddr(map, vaddr);
+		mutex_unlock(&buffer->lock);
+	} else {
+		pr_warn_ratelimited("heap %s doesn't support map_kernel\n",
+				    buffer->heap->name);
+		ret = ERR_PTR(-EINVAL);
+	}
+
+	return ret;
+}
+
+static void ion_dma_buf_vunmap(struct dma_buf *dmabuf, struct dma_buf_map *map)
+{
+	struct ion_buffer *buffer = dmabuf->priv;
+	
+	if (buffer->heap->ops->map_kernel) {
+		mutex_lock(&buffer->lock);
+		ion_buffer_kmap_put(buffer);
+		mutex_unlock(&buffer->lock);
+		dma_buf_map_clear(map);
+	}
+	
+}
+
+
 static int ion_dma_buf_begin_cpu_access(struct dma_buf *dmabuf,
 					enum dma_data_direction direction)
 {
@@ -999,6 +1034,7 @@ static int ion_dma_buf_begin_cpu_access(struct dma_buf *dmabuf,
 	}
 
 	mutex_lock(&buffer->lock);
+
 	vaddr = ion_buffer_kmap_get(buffer);
 	mutex_unlock(&buffer->lock);
 	return PTR_ERR_OR_ZERO(vaddr);
@@ -1025,6 +1061,8 @@ static struct dma_buf_ops dma_buf_ops = {
 	.end_cpu_access = ion_dma_buf_end_cpu_access,
 	// .map = ion_dma_buf_kmap,
 	// .unmap = ion_dma_buf_kunmap,
+	.vmap = ion_dma_buf_vmap,
+	.vunmap = ion_dma_buf_vunmap,
 };
 
 static struct dma_buf *__ion_share_dma_buf(struct ion_client *client,
